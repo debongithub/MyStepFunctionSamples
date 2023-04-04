@@ -12,10 +12,11 @@ function convertToCSV(rows) {
 
 // Lambda handler function
 exports.handler = async (event) => {
-  const namedQuery = 'YourNamedQuery'; // Replace with your named query
+  const namedQuery = event.namedQuery; // Named query from event object
+  const database = process.env.DATABASE; // Database name from environment variable
   const params = {
     QueryExecutionContext: {
-      Database: 'YourDatabase' // Replace with your database
+      Database: database // Replace with your database
     },
     ResultConfiguration: {
       OutputLocation: 's3://your-output-bucket/results/' // Replace with your output bucket
