@@ -1,63 +1,58 @@
 const AWS = require('aws-sdk');
-const fs = require('fs');
-const athena = new AWS.Athena();
 
-exports.handler = async (event) => {
-  const queries = JSON.parse(fs.readFileSync('query.json', 'utf8'));
-  const query = queries[event.input];
+exports.handler = async (event, context) => {
+  const athena = new AWS.Athena({ apiVersion: '2017-05-18' });
+  const sns = new AWS.SNS({ apiVersion: '2010-03-31' });
 
+  // Query Athena
+  const query = 'SELECT * FROM "default"."cloudtrail_logs_cloudtrail_awslogs_218067593328_roipsdcb_isengard_do_not_delete" limit 10;';
   const params = {
     QueryString: query,
-    QueryExecutionContext: {
-      Database: 'your_database',
-    },
     ResultConfiguration: {
-      OutputLocation: 's3://your-output-bucket/',
-    },
-  };
-
-  const startQueryExecution = (params) =>
-    new Promise((resolve, reject) => {
-      athena.startQueryExecution(params, (err, data) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(data);
-        }
-      });
-    });
-
-  const getQueryExecution = (params) =>
-    new Promise((resolve, reject) => {
-      athena.getQueryExecution(params, (err, data) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(data);
-        }
-      });
-    });
-
-  try {
-    const startResponse = await startQueryExecution(params);
-    const executionId = startResponse.QueryExecutionId;
-    let status = 'RUNNING';
-
-    while (status === 'RUNNING' || status === 'QUEUED') {
-      await new Promise((r) => setTimeout(r, 5000));
-      const result = await getQueryExecution({ QueryExecutionId: executionId });
-      status = result.QueryExecution.Status.State;
+      OutputLocation: 's3://amazon-connect-18cab43f438e/'
     }
+  };
+  const queryExecution = await athena.startQueryExecution(params).promise();
+  const queryExecutionId = queryExecution.QueryExecutionId;
 
-    return {
-      input: event.input,
-      query_execution_id: executionId,
-      status: status,
-    };
-  } catch (error) {
-    return {
-      input: event.input,
-      error: error.message,
-    };
+  // Wait for the query to complete
+  let status = 'RUNNING';
+  while (status === 'RUNNING' || status === 'QUEUED') {
+    const queryExecutionResult = await athena.getQueryExecution({ QueryExecutionId: queryExecutionId }).promise();
+    status = queryExecutionResult.QueryExecution.Status.State;
+    console.log("Status of the Query : " + status)
+    await new Promise(resolve => setTimeout(resolve, 5000)); // Wait for 5 seconds before checking again
   }
+
+  // Get the query results
+  const resultParams = {
+    QueryExecutionId: queryExecutionId
+  };
+  const result = await athena.getQueryResults(resultParams).promise();
+
+  // Format the results
+  const formattedResults = formatResults(result);
+  console.log(formattedResults);
+
+  // Publish the results to SNS
+  const snsParams = {
+    Message: JSON.stringify(formattedResults),
+    TopicArn: 'arn:aws:sns:us-east-1:123456789012:my-topic'
+  };
+  await sns.publish(snsParams).promise();
 };
+
+function formatResults(result) {
+  // Format the query results in the desired format
+  // For example, you could return an array of objects, where each object represents a row in the query results
+  const rows = result.ResultSet.Rows;
+  const headers = rows.shift().Data.map(header => header.VarCharValue);
+  const formattedResults = rows.map(row => {
+    const obj = {};
+    row.Data.forEach((value, index) => {
+      obj[headers[index]] = value.VarCharValue;
+    });
+    return obj;
+  });
+  return formattedResults;
+}
