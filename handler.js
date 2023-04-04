@@ -5,7 +5,7 @@ exports.handler = async (event, context) => {
   const sns = new AWS.SNS({ apiVersion: '2010-03-31' });
 
   // Query Athena
-  const query = 'SELECT * FROM "default"."cloudtrail_logs_cloudtrail_awslogs_218067593328_roipsdcb_isengard_do_not_delete" limit 10;';
+  const query = 'SELECT * FROM "default"."SourceTable" limit 10;';
   const params = {
     QueryString: query,
     ResultConfiguration: {
