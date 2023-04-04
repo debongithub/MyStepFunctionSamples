@@ -1,58 +1,74 @@
+// Load the AWS SDK for Node.js
 const AWS = require('aws-sdk');
 
-exports.handler = async (event, context) => {
-  const athena = new AWS.Athena({ apiVersion: '2017-05-18' });
-  const sns = new AWS.SNS({ apiVersion: '2010-03-31' });
+// Create an Athena and SNS object
+const athena = new AWS.Athena({ apiVersion: '2017-05-18' });
+const sns = new AWS.SNS({ apiVersion: '2010-03-31' });
 
-  // Query Athena
-  const query = 'SELECT * FROM "default"."SourceTable" limit 10;';
-  const params = {
-    QueryString: query,
-    ResultConfiguration: {
-      OutputLocation: 's3://amazon-connect-18cab43f438e/'
-    }
-  };
-  const queryExecution = await athena.startQueryExecution(params).promise();
-  const queryExecutionId = queryExecution.QueryExecutionId;
-
-  // Wait for the query to complete
-  let status = 'RUNNING';
-  while (status === 'RUNNING' || status === 'QUEUED') {
-    const queryExecutionResult = await athena.getQueryExecution({ QueryExecutionId: queryExecutionId }).promise();
-    status = queryExecutionResult.QueryExecution.Status.State;
-    console.log("Status of the Query : " + status)
-    await new Promise(resolve => setTimeout(resolve, 5000)); // Wait for 5 seconds before checking again
-  }
-
-  // Get the query results
-  const resultParams = {
-    QueryExecutionId: queryExecutionId
-  };
-  const result = await athena.getQueryResults(resultParams).promise();
-
-  // Format the results
-  const formattedResults = formatResults(result);
-  console.log(formattedResults);
-
-  // Publish the results to SNS
-  const snsParams = {
-    Message: JSON.stringify(formattedResults),
-    TopicArn: 'arn:aws:sns:us-east-1:123456789012:my-topic'
-  };
-  await sns.publish(snsParams).promise();
-};
-
-function formatResults(result) {
-  // Format the query results in the desired format
-  // For example, you could return an array of objects, where each object represents a row in the query results
-  const rows = result.ResultSet.Rows;
-  const headers = rows.shift().Data.map(header => header.VarCharValue);
-  const formattedResults = rows.map(row => {
-    const obj = {};
-    row.Data.forEach((value, index) => {
-      obj[headers[index]] = value.VarCharValue;
-    });
-    return obj;
-  });
-  return formattedResults;
+// Convert query results to CSV
+function convertToCSV(rows) {
+  return rows.map(row => row.Data.map(cell => cell.VarCharValue).join(',')).join('\n');
 }
+
+// Lambda handler function
+exports.handler = async (event) => {
+  const namedQuery = 'YourNamedQuery'; // Replace with your named query
+  const params = {
+    QueryExecutionContext: {
+      Database: 'YourDatabase' // Replace with your database
+    },
+    ResultConfiguration: {
+      OutputLocation: 's3://your-output-bucket/results/' // Replace with your output bucket
+    },
+    QueryString: '',
+    QueryName: namedQuery
+  };
+
+  try {
+    // Get the named query details
+    const getNamedQueryResponse = await athena.getNamedQuery({ NamedQueryId: namedQuery }).promise();
+
+    // Set the query string from the named query
+    params.QueryString = getNamedQueryResponse.NamedQuery.QueryString;
+
+    // Execute the query
+    const startQueryExecutionResponse = await athena.startQueryExecution(params).promise();
+    const queryExecutionId = startQueryExecutionResponse.QueryExecutionId;
+
+    // Wait for query execution to finish
+    let queryExecutionStatus;
+    do {
+      const getQueryExecutionResponse = await athena.getQueryExecution({ QueryExecutionId: queryExecutionId }).promise();
+      queryExecutionStatus = getQueryExecutionResponse.QueryExecution.Status.State;
+      if (queryExecutionStatus === 'FAILED' || queryExecutionStatus === 'CANCELLED') {
+        throw new Error(`Query execution failed: ${queryExecutionStatus}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    } while (queryExecutionStatus === 'RUNNING');
+
+    // Fetch query results
+    const getQueryResultsResponse = await athena.getQueryResults({ QueryExecutionId: queryExecutionId }).promise();
+    const queryResults = getQueryResultsResponse.ResultSet.Rows;
+
+    // Convert query results to CSV
+    const csvResults = convertToCSV(queryResults);
+
+    // Send email using SNS
+    const snsParams = {
+      Message: `Query results:\n\n${csvResults}`,
+      Subject: 'Athena Query Results',
+      TopicArn: 'arn:aws:sns:REGION:ACCOUNT_ID:TOPIC_NAME' // Replace with your SNS topic ARN
+    };
+    await sns.publish(snsParams).promise();
+
+    return {
+      statusCode: 200,
+      body: 'Email sent successfully'
+    };
+  } catch (error) {
+    return {
+      statusCode: 500,
+      body: `Error: ${error.message}`
+    };
+  }
+};
