@@ -1,0 +1,4 @@
+PREPARE my_query FROM
+  CONCAT('SELECT * FROM ', ? ,' WHERE col = ?');
+  
+EXECUTE my_query USING 'my_table_name', 'my_col_value';
